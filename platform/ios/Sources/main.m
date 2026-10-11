@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/vm_map.h>
 #include <objc/message.h>
 #include <stdbool.h>

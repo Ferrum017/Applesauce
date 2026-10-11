@@ -2,6 +2,15 @@ diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/i
 index 559f7ca..723fae7 100644
 --- a/externals/oaknut/include/oaknut/code_block.hpp
 +++ b/externals/oaknut/include/oaknut/code_block.hpp
+@@ -12,7 +12,8 @@
+ #elif defined(__APPLE__)
+ #    include <TargetConditionals.h>
+ #    include <libkern/OSCacheControl.h>
+ #    include <mach/mach.h>
++#    include <mach/mach_vm.h>
+ #    include <mach/vm_map.h>
+ #    include <pthread.h>
+ #    include <sys/mman.h>
 @@ -41,6 +41,52 @@ inline ReusableJitRegion& reusable_jit_region()
      return region;
  }
