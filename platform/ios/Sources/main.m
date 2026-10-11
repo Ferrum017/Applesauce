@@ -135,16 +135,16 @@ static bool touchhle_can_allocate_executable_memory(void) {
         return false;
     }
 
-    vm_address_t region_address = (vm_address_t)mapping;
-    vm_size_t region_size = 0;
-    vm_region_basic_info_data_t info = {0};
-    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT;
+    mach_vm_address_t region_address = (mach_vm_address_t)mapping;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info = {0};
+    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object_name = MACH_PORT_NULL;
-    kern_return_t result = vm_region(
+    kern_return_t result = mach_vm_region(
         mach_task_self(),
         &region_address,
         &region_size,
-        VM_REGION_BASIC_INFO,
+        VM_REGION_BASIC_INFO_64,
         (vm_region_info_t)&info,
         &info_count,
         &object_name
@@ -154,7 +154,7 @@ static bool touchhle_can_allocate_executable_memory(void) {
     }
 
     bool executable = result == KERN_SUCCESS
-        && region_address == (vm_address_t)mapping
+        && region_address == (mach_vm_address_t)mapping
         && (info.protection & VM_PROT_EXECUTE) != 0;
     munmap(mapping, size);
     return executable;
