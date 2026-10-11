@@ -2,16 +2,7 @@ diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/i
 index 559f7ca..723fae7 100644
 --- a/externals/oaknut/include/oaknut/code_block.hpp
 +++ b/externals/oaknut/include/oaknut/code_block.hpp
-@@ -12,7 +12,8 @@
- #elif defined(__APPLE__)
- #    include <TargetConditionals.h>
- #    include <libkern/OSCacheControl.h>
- #    include <mach/mach.h>
-+#    include <mach/mach_vm.h>
- #    include <mach/vm_map.h>
- #    include <pthread.h>
- #    include <sys/mman.h>
-@@ -41,6 +41,52 @@ inline ReusableJitRegion& reusable_jit_region()
+@@ -41,6 +41,34 @@ inline ReusableJitRegion& reusable_jit_region()
      return region;
  }
  
@@ -22,8 +13,8 @@ index 559f7ca..723fae7 100644
 +// the kernel really grants execute permission, and fall back to the debugger
 +// protocol otherwise.
 +//
-+// Checking the returned pointer is not enough.  iOS may accept an RWX mmap
-+// request but silently remove VM_PROT_EXECUTE when JIT is unavailable.
++// Checking mmap's returned pointer is not enough.  Require the kernel to
++// accept an explicit transition from writable memory to RWX.
 +inline std::uint32_t* prepare_permanent_jit_region(std::size_t size)
 +{
 +    int flags = MAP_ANON | MAP_PRIVATE;
@@ -31,29 +22,11 @@ index 559f7ca..723fae7 100644
 +    flags |= MAP_JIT;
 +#    endif
 +
-+    void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
++    void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
 +    if (mapping == MAP_FAILED)
 +        return nullptr;
 +
-+    mach_vm_address_t region_address = reinterpret_cast<mach_vm_address_t>(mapping);
-+    mach_vm_size_t region_size = 0;
-+    vm_region_basic_info_data_64_t info{};
-+    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
-+    mach_port_t object_name = MACH_PORT_NULL;
-+    const kern_return_t result = mach_vm_region(mach_task_self(),
-+                                           &region_address,
-+                                           &region_size,
-+                                           VM_REGION_BASIC_INFO_64,
-+                                           reinterpret_cast<vm_region_info_t>(&info),
-+                                           &info_count,
-+                                           &object_name);
-+    if (object_name != MACH_PORT_NULL)
-+        mach_port_deallocate(mach_task_self(), object_name);
-+
-+    const bool executable = result == KERN_SUCCESS &&
-+                            region_address == reinterpret_cast<mach_vm_address_t>(mapping) &&
-+                            (info.protection & VM_PROT_EXECUTE) != 0;
-+    if (!executable) {
++    if (mprotect(mapping, size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
 +        munmap(mapping, size);
 +        return nullptr;
 +    }
@@ -64,7 +37,7 @@ index 559f7ca..723fae7 100644
  __attribute__((noinline, optnone, naked)) static void* prepare_jit_region(void*, std::size_t)
  {
      __asm__ volatile(
-@@ -78,6 +124,16 @@ public:
+@@ -78,6 +106,16 @@ public:
              m_wmemory = reusable_region.writable_memory;
              reusable_region.in_use = true;
          } else {

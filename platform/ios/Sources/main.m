@@ -3,9 +3,6 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
-#include <mach/vm_map.h>
 #include <objc/message.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -115,8 +112,8 @@ static bool touchhle_has_dynamic_codesigning(void) {
 
 // Verify what the kernel granted, rather than trusting the entitlement string
 // alone.  AppSync can preserve an entitlement in the signature even when the
-// kernel refuses its capability.  iOS may also return a writable mapping for
-// an RWX request while silently removing execute permission.
+// kernel refuses its capability.  Allocate writable memory first and require
+// the kernel to accept an explicit transition to RWX.
 static bool touchhle_can_allocate_executable_memory(void) {
     const size_t size = (size_t)getpagesize();
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -127,7 +124,7 @@ static bool touchhle_can_allocate_executable_memory(void) {
     void *mapping = mmap(
         NULL,
         size,
-        PROT_READ | PROT_WRITE | PROT_EXEC,
+        PROT_READ | PROT_WRITE,
         flags,
         -1,
         0
@@ -136,27 +133,11 @@ static bool touchhle_can_allocate_executable_memory(void) {
         return false;
     }
 
-    mach_vm_address_t region_address = (mach_vm_address_t)mapping;
-    mach_vm_size_t region_size = 0;
-    vm_region_basic_info_data_64_t info = {0};
-    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t object_name = MACH_PORT_NULL;
-    kern_return_t result = mach_vm_region(
-        mach_task_self(),
-        &region_address,
-        &region_size,
-        VM_REGION_BASIC_INFO_64,
-        (vm_region_info_t)&info,
-        &info_count,
-        &object_name
-    );
-    if (object_name != MACH_PORT_NULL) {
-        mach_port_deallocate(mach_task_self(), object_name);
-    }
-
-    bool executable = result == KERN_SUCCESS
-        && region_address == (mach_vm_address_t)mapping
-        && (info.protection & VM_PROT_EXECUTE) != 0;
+    bool executable = mprotect(
+        mapping,
+        size,
+        PROT_READ | PROT_WRITE | PROT_EXEC
+    ) == 0;
     munmap(mapping, size);
     return executable;
 }
@@ -167,9 +148,8 @@ bool touchhle_ios_jit_available(void) {
             && touchhle_can_allocate_executable_memory());
 }
 
-// The mmap probe above must inspect the kernel-reported VM protection. Merely
-// checking MAP_FAILED produces a false positive on iOS, which may return a
-// writable-but-not-executable mapping when JIT is unavailable.
+// The probe above must require a successful mprotect transition. Merely
+// checking MAP_FAILED produces a false positive on iOS.
 void touchhle_ios_log_jit_status(const char *context) {
     unsigned int flags = 0;
     int result = csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags));
