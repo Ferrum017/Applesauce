@@ -194,6 +194,15 @@ static TouchHLENativeHost *sharedHost;
         }
     }
 
+    // Custom builds may carry a user-supplied game inside the app bundle. A
+    // bundled IPA is read-only, which is fine: touchHLE stores saves in the
+    // writable Documents/touchHLE_sandbox directory instead of modifying it.
+    if (self.gameURL == nil) {
+        self.gameURL = [NSBundle.mainBundle URLForResource:@"DeadSpace"
+                                             withExtension:@"ipa"
+                                              subdirectory:@"touchHLE_apps"];
+    }
+
     if (self.gameURL != nil) {
         self.statusLabel.text = [NSString stringWithFormat:@"Выбран файл:\n%@", self.gameURL.lastPathComponent];
         self.launchButton.enabled = YES;
