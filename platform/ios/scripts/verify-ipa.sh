@@ -60,8 +60,10 @@ if [ ! -d "$APP" ]; then
 fi
 
 # Check embedded cores too: signing the host and signing its libraries are
-# separate build steps, so an unsigned host alone is not enough.
-find "$APP" -type f -print | while IFS= read -r binary; do
+# separate build steps, so an unsigned host alone is not enough. Do not scan
+# touchHLE_dylibs here: those are deliberately 32-bit guest iPhone libraries
+# consumed by the emulator, not native libraries loaded by the iOS host.
+find "$APP/DeadSpaceLegacy" "$APP/Frameworks" -type f -print | while IFS= read -r binary; do
     file "$binary" | grep -q 'Mach-O' || continue
     if ! file "$binary" | grep -q 'arm64'; then
         echo "A Mach-O file is not arm64: $binary" >&2
