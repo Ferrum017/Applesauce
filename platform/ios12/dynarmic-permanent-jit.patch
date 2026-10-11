@@ -1,0 +1,74 @@
+diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/include/oaknut/code_block.hpp
+index 559f7ca..723fae7 100644
+--- a/externals/oaknut/include/oaknut/code_block.hpp
++++ b/externals/oaknut/include/oaknut/code_block.hpp
+@@ -41,6 +41,52 @@ inline ReusableJitRegion& reusable_jit_region()
+     return region;
+ }
+ 
++// AltJIT-style debuggers allocate executable memory by handling the
++// brk #0xf00d protocol below.  A jailbroken iOS 12 process carrying the
++// dynamic-codesigning entitlement does not have such a debugger attached,
++// however: it can allocate executable memory itself.  Prefer that path when
++// the kernel really grants execute permission, and fall back to the debugger
++// protocol otherwise.
++//
++// Checking the returned pointer is not enough.  iOS may accept an RWX mmap
++// request but silently remove VM_PROT_EXECUTE when JIT is unavailable.
++inline std::uint32_t* prepare_permanent_jit_region(std::size_t size)
++{
++    int flags = MAP_ANON | MAP_PRIVATE;
++#    if defined(MAP_JIT)
++    flags |= MAP_JIT;
++#    endif
++
++    void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
++    if (mapping == MAP_FAILED)
++        return nullptr;
++
++    vm_address_t region_address = reinterpret_cast<vm_address_t>(mapping);
++    vm_size_t region_size = 0;
++    vm_region_basic_info_data_t info{};
++    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT;
++    mach_port_t object_name = MACH_PORT_NULL;
++    const kern_return_t result = vm_region(mach_task_self(),
++                                           &region_address,
++                                           &region_size,
++                                           VM_REGION_BASIC_INFO,
++                                           reinterpret_cast<vm_region_info_t>(&info),
++                                           &info_count,
++                                           &object_name);
++    if (object_name != MACH_PORT_NULL)
++        mach_port_deallocate(mach_task_self(), object_name);
++
++    const bool executable = result == KERN_SUCCESS &&
++                            region_address == reinterpret_cast<vm_address_t>(mapping) &&
++                            (info.protection & VM_PROT_EXECUTE) != 0;
++    if (!executable) {
++        munmap(mapping, size);
++        return nullptr;
++    }
++
++    return static_cast<std::uint32_t*>(mapping);
++}
++
+ __attribute__((noinline, optnone, naked)) static void* prepare_jit_region(void*, std::size_t)
+ {
+     __asm__ volatile(
+@@ -78,6 +124,16 @@ public:
+             m_wmemory = reusable_region.writable_memory;
+             reusable_region.in_use = true;
+         } else {
++            // Chimera/AppSync can preserve dynamic-codesigning on iOS 12.
++            // In that configuration no debugger exists to service Oaknut's
++            // brk request, so use the directly executable mapping instead.
++            m_memory = detail::prepare_permanent_jit_region(size);
++            if (m_memory != nullptr) {
++                m_wmemory = m_memory;
++                reusable_region = {m_memory, m_wmemory, size, true};
++                return;
++            }
++
+             m_memory = (std::uint32_t*)detail::prepare_jit_region(nullptr, size);
+             if (m_memory == nullptr)
+                 throw std::bad_alloc{};

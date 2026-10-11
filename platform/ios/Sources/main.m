@@ -3,11 +3,14 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
+#include <mach/mach.h>
+#include <mach/vm_map.h>
 #include <objc/message.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -109,25 +112,78 @@ static bool touchhle_has_dynamic_codesigning(void) {
     return granted;
 }
 
-bool touchhle_ios_jit_available(void) {
-    return touchhle_ios_jit_is_from_debugger() || touchhle_has_dynamic_codesigning();
+// Verify what the kernel granted, rather than trusting the entitlement string
+// alone.  AppSync can preserve an entitlement in the signature even when the
+// kernel refuses its capability.  iOS may also return a writable mapping for
+// an RWX request while silently removing execute permission.
+static bool touchhle_can_allocate_executable_memory(void) {
+    const size_t size = (size_t)getpagesize();
+    int flags = MAP_ANON | MAP_PRIVATE;
+#ifdef MAP_JIT
+    flags |= MAP_JIT;
+#endif
+
+    void *mapping = mmap(
+        NULL,
+        size,
+        PROT_READ | PROT_WRITE | PROT_EXEC,
+        flags,
+        -1,
+        0
+    );
+    if (mapping == MAP_FAILED) {
+        return false;
+    }
+
+    vm_address_t region_address = (vm_address_t)mapping;
+    vm_size_t region_size = 0;
+    vm_region_basic_info_data_t info = {0};
+    mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t result = vm_region(
+        mach_task_self(),
+        &region_address,
+        &region_size,
+        VM_REGION_BASIC_INFO,
+        (vm_region_info_t)&info,
+        &info_count,
+        &object_name
+    );
+    if (object_name != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), object_name);
+    }
+
+    bool executable = result == KERN_SUCCESS
+        && region_address == (vm_address_t)mapping
+        && (info.protection & VM_PROT_EXECUTE) != 0;
+    munmap(mapping, size);
+    return executable;
 }
 
-// Do NOT add an mmap PROT_WRITE | PROT_EXEC probe here. Per mmap(2), iOS
-// returns a writable-but-not-executable mapping instead of failing when
-// MAP_JIT is absent, so that probe reports success with JIT off. A false "JIT
-// is on" sends the emulator into a guaranteed freeze with no explanation.
+bool touchhle_ios_jit_available(void) {
+    return touchhle_ios_jit_is_from_debugger()
+        || (touchhle_has_dynamic_codesigning()
+            && touchhle_can_allocate_executable_memory());
+}
+
+// The mmap probe above must inspect the kernel-reported VM protection. Merely
+// checking MAP_FAILED produces a false positive on iOS, which may return a
+// writable-but-not-executable mapping when JIT is unavailable.
 void touchhle_ios_log_jit_status(const char *context) {
     unsigned int flags = 0;
     int result = csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags));
+    bool entitlement = touchhle_has_dynamic_codesigning();
+    bool executable_mapping = entitlement
+        && touchhle_can_allocate_executable_memory();
     fprintf(
         stderr,
-        "touchHLE JIT [%s]: available=%d debugger=%d entitlement=%d "
+        "touchHLE JIT [%s]: available=%d debugger=%d entitlement=%d executable_mapping=%d "
         "cs_flags=0x%08x csops=%d/%d\n",
         context ? context : "?",
-        touchhle_ios_jit_available(),
+        touchhle_ios_jit_is_from_debugger() || executable_mapping,
         touchhle_ios_jit_is_from_debugger(),
-        touchhle_has_dynamic_codesigning(),
+        entitlement,
+        executable_mapping,
         flags,
         result,
         (result == 0) ? 0 : errno

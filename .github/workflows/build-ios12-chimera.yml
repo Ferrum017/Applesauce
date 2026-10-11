@@ -33,6 +33,8 @@ jobs:
         run: |
           set -eux
           export TOUCHHLE_BOOST_ROOT="$(brew --prefix boost)/include"
+          git -C vendor/dynarmic apply \
+            ../../platform/ios12/dynarmic-permanent-jit.patch
           sh platform/ios/scripts/build-sdl-shared.sh iphoneos
           sh platform/ios/scripts/build-host.sh iphoneos Release
 
