@@ -64,15 +64,15 @@ done
 case "$MODE" in
     unsigned)
         ENTITLEMENTS=
-        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-unsigned.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/ApplesauceLegacy-iOS12-unsigned.ipa"
         ;;
     trollstore)
         ENTITLEMENTS="$ROOT/Config/TouchHLEHost-TrollStore.entitlements"
-        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-debugger-jit.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/ApplesauceLegacy-iOS12-debugger-jit.ipa"
         ;;
     permanent)
         ENTITLEMENTS="$ROOT/Config/TouchHLEHost-TrollStore-PermanentJIT.entitlements"
-        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-Chimera.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/ApplesauceLegacy-iOS12-Chimera.ipa"
         ;;
 esac
 

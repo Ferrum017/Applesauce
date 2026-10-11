@@ -26,15 +26,15 @@ extern int32_t touchhle_ios_launch_game(
 
 @class TouchHLENativeHost;
 
-@interface DeadSpaceHostViewController : UIViewController
+@interface LegacyHostViewController : UIViewController
 @property(nonatomic, assign) UIInterfaceOrientationMask orientationMask;
 @end
 
-@interface DeadSpaceControlsWindow : UIWindow
+@interface LegacyControlsWindow : UIWindow
 @property(nonatomic, weak) UIView *interactiveView;
 @end
 
-@implementation DeadSpaceControlsWindow
+@implementation LegacyControlsWindow
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
@@ -46,7 +46,7 @@ extern int32_t touchhle_ios_launch_game(
 
 @end
 
-@implementation DeadSpaceHostViewController
+@implementation LegacyHostViewController
 
 - (BOOL)shouldAutorotate {
     return YES;
@@ -65,12 +65,17 @@ extern int32_t touchhle_ios_launch_game(
 
 @end
 
-@interface TouchHLENativeHost : NSObject <UIDocumentPickerDelegate>
+@interface TouchHLENativeHost : NSObject <UIDocumentPickerDelegate, UIPickerViewDataSource, UIPickerViewDelegate>
 @property(nonatomic, strong) UIWindow *hostWindow;
-@property(nonatomic, strong) DeadSpaceControlsWindow *controlsWindow;
+@property(nonatomic, strong) LegacyControlsWindow *controlsWindow;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIButton *launchButton;
+@property(nonatomic, strong) UIButton *deleteButton;
+@property(nonatomic, strong) UIPickerView *gamePicker;
+@property(nonatomic, strong) UISegmentedControl *orientationControl;
+@property(nonatomic, copy) NSArray<NSURL *> *games;
 @property(nonatomic, strong) NSURL *gameURL;
+@property(nonatomic, assign) int32_t launchOrientation;
 @property(nonatomic, assign) void *coreHandle;
 @property(nonatomic, assign) TouchHLEIOSRunGameFn runGame;
 @property(nonatomic, assign) TouchHLEIOSRequestExitFn requestExit;
@@ -109,20 +114,20 @@ static TouchHLENativeHost *sharedHost;
         return;
     }
 
-    DeadSpaceHostViewController *controller = [[DeadSpaceHostViewController alloc] init];
+    LegacyHostViewController *controller = [[LegacyHostViewController alloc] init];
     controller.orientationMask = UIInterfaceOrientationMaskAll;
     controller.view.backgroundColor = [UIColor colorWithRed:0.025 green:0.045 blue:0.055 alpha:1.0];
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectZero];
     title.translatesAutoresizingMaskIntoConstraints = NO;
-    title.text = @"DEAD SPACE LEGACY";
+    title.text = @"APPLESAUCE LEGACY";
     title.textAlignment = NSTextAlignmentCenter;
     title.textColor = [UIColor colorWithRed:0.55 green:0.95 blue:0.92 alpha:1.0];
     title.font = [UIFont boldSystemFontOfSize:30.0];
 
     UILabel *subtitle = [[UILabel alloc] initWithFrame:CGRectZero];
     subtitle.translatesAutoresizingMaskIntoConstraints = NO;
-    subtitle.text = @"ARMv7 → ARM64 compatibility host for iOS 12";
+    subtitle.text = @"32-bit iPhone app compatibility host for iOS 12";
     subtitle.textAlignment = NSTextAlignmentCenter;
     subtitle.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
     subtitle.font = [UIFont systemFontOfSize:15.0];
@@ -135,19 +140,39 @@ static TouchHLENativeHost *sharedHost;
     self.statusLabel.font = [UIFont systemFontOfSize:17.0];
     self.statusLabel.numberOfLines = 0;
 
+    self.gamePicker = [[UIPickerView alloc] initWithFrame:CGRectZero];
+    self.gamePicker.translatesAutoresizingMaskIntoConstraints = NO;
+    self.gamePicker.dataSource = self;
+    self.gamePicker.delegate = self;
+
+    self.orientationControl = [[UISegmentedControl alloc] initWithItems:@[
+        @"Авто", @"Портрет", @"Лево", @"Право"
+    ]];
+    self.orientationControl.translatesAutoresizingMaskIntoConstraints = NO;
+    self.orientationControl.selectedSegmentIndex = 0;
+
     UIButton *importButton = [self buttonWithTitle:@"Импортировать IPA"
                                            action:@selector(importGame:)];
-    self.launchButton = [self buttonWithTitle:@"Запустить Dead Space"
+    self.deleteButton = [self buttonWithTitle:@"Удалить выбранный IPA"
+                                       action:@selector(deleteGame:)];
+    self.launchButton = [self buttonWithTitle:@"Запустить выбранное приложение"
                                        action:@selector(launchGame:)];
 
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
-        title, subtitle, self.statusLabel, importButton, self.launchButton
+        title,
+        subtitle,
+        self.statusLabel,
+        self.gamePicker,
+        self.orientationControl,
+        importButton,
+        self.deleteButton,
+        self.launchButton
     ]];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentFill;
     stack.distribution = UIStackViewDistributionFill;
-    stack.spacing = 20.0;
+    stack.spacing = 12.0;
     [controller.view addSubview:stack];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -156,7 +181,10 @@ static TouchHLENativeHost *sharedHost;
         [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:controller.view.leadingAnchor constant:34.0],
         [stack.trailingAnchor constraintLessThanOrEqualToAnchor:controller.view.trailingAnchor constant:-34.0],
         [stack.widthAnchor constraintLessThanOrEqualToConstant:560.0],
+        [self.gamePicker.heightAnchor constraintEqualToConstant:110.0],
+        [self.orientationControl.heightAnchor constraintEqualToConstant:36.0],
         [importButton.heightAnchor constraintEqualToConstant:52.0],
+        [self.deleteButton.heightAnchor constraintEqualToConstant:52.0],
         [self.launchButton.heightAnchor constraintEqualToConstant:52.0]
     ]];
 
@@ -186,32 +214,76 @@ static TouchHLENativeHost *sharedHost;
         options:NSDirectoryEnumerationSkipsHiddenFiles
         error:nil];
 
-    self.gameURL = nil;
+    NSMutableArray<NSURL *> *games = [NSMutableArray array];
     for (NSURL *url in files) {
         if ([[url.pathExtension lowercaseString] isEqualToString:@"ipa"]) {
-            self.gameURL = url;
-            break;
+            [games addObject:url];
         }
     }
-
-    // Custom builds may carry a user-supplied game inside the app bundle. A
-    // bundled IPA is read-only, which is fine: touchHLE stores saves in the
-    // writable Documents/touchHLE_sandbox directory instead of modifying it.
-    if (self.gameURL == nil) {
-        self.gameURL = [NSBundle.mainBundle URLForResource:@"DeadSpace"
-                                             withExtension:@"ipa"
-                                              subdirectory:@"touchHLE_apps"];
+    [games sortUsingComparator:^NSComparisonResult(NSURL *left, NSURL *right) {
+        return [left.lastPathComponent localizedCaseInsensitiveCompare:right.lastPathComponent];
+    }];
+    self.games = games;
+    [self.gamePicker reloadAllComponents];
+    self.gameURL = self.games.firstObject;
+    if (self.games.count > 0) {
+        [self.gamePicker selectRow:0 inComponent:0 animated:NO];
     }
 
     if (self.gameURL != nil) {
-        self.statusLabel.text = [NSString stringWithFormat:@"Выбран файл:\n%@", self.gameURL.lastPathComponent];
+        self.statusLabel.text = [NSString stringWithFormat:
+            @"Найдено IPA: %lu\nВыбран: %@",
+            (unsigned long)self.games.count,
+            self.gameURL.lastPathComponent];
         self.launchButton.enabled = YES;
         self.launchButton.alpha = 1.0;
+        self.deleteButton.enabled = YES;
+        self.deleteButton.alpha = 1.0;
     } else {
-        self.statusLabel.text = @"Скопируй расшифрованный Dead Space IPA через кнопку ниже или через iTunes/Filza в Documents/touchHLE_apps.";
+        self.statusLabel.text = @"Импортируй расшифрованный 32-битный ARMv6/ARMv7 IPA.\nARM64 и зашифрованные App Store IPA не поддерживаются.";
         self.launchButton.enabled = NO;
         self.launchButton.alpha = 0.45;
+        self.deleteButton.enabled = NO;
+        self.deleteButton.alpha = 0.45;
     }
+}
+
+- (NSInteger)numberOfComponentsInPickerView:(UIPickerView *)pickerView {
+    (void)pickerView;
+    return 1;
+}
+
+- (NSInteger)pickerView:(UIPickerView *)pickerView
+numberOfRowsInComponent:(NSInteger)component {
+    (void)pickerView;
+    (void)component;
+    return (NSInteger)self.games.count;
+}
+
+- (NSString *)pickerView:(UIPickerView *)pickerView
+             titleForRow:(NSInteger)row
+            forComponent:(NSInteger)component {
+    (void)pickerView;
+    (void)component;
+    if (row < 0 || (NSUInteger)row >= self.games.count) {
+        return @"";
+    }
+    return self.games[(NSUInteger)row].lastPathComponent;
+}
+
+- (void)pickerView:(UIPickerView *)pickerView
+      didSelectRow:(NSInteger)row
+       inComponent:(NSInteger)component {
+    (void)pickerView;
+    (void)component;
+    if (row < 0 || (NSUInteger)row >= self.games.count) {
+        return;
+    }
+    self.gameURL = self.games[(NSUInteger)row];
+    self.statusLabel.text = [NSString stringWithFormat:
+        @"Найдено IPA: %lu\nВыбран: %@",
+        (unsigned long)self.games.count,
+        self.gameURL.lastPathComponent];
 }
 
 - (void)importGame:(id)sender {
@@ -246,7 +318,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *name = sourceURL.lastPathComponent.length > 0
             ? sourceURL.lastPathComponent
-            : @"DeadSpace.ipa";
+            : @"Imported.ipa";
         if (![[name.pathExtension lowercaseString] isEqualToString:@"ipa"]) {
             name = [name stringByAppendingPathExtension:@"ipa"];
         }
@@ -270,6 +342,33 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             [self refreshGameSelection];
         });
     });
+}
+
+- (void)deleteGame:(id)sender {
+    (void)sender;
+    if (self.gameURL == nil) {
+        return;
+    }
+
+    NSString *name = self.gameURL.lastPathComponent;
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Удалить IPA?"
+        message:name
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Отмена"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Удалить"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction *action) {
+        NSError *error = nil;
+        [[NSFileManager defaultManager] removeItemAtURL:self.gameURL error:&error];
+        if (error != nil) {
+            [self showError:@"Не удалось удалить IPA" details:error.localizedDescription];
+        }
+        [self refreshGameSelection];
+    }]];
+    [self.hostWindow.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 
 - (BOOL)loadCore:(NSString **)errorMessage {
@@ -312,7 +411,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    touchhle_ios_log_jit_status("dead-space-launch");
+    switch (self.orientationControl.selectedSegmentIndex) {
+        case 1:
+            self.launchOrientation = 0;
+            break;
+        case 2:
+            self.launchOrientation = 1;
+            break;
+        case 3:
+            self.launchOrientation = 2;
+            break;
+        default: {
+            UIInterfaceOrientation current = UIApplication.sharedApplication.statusBarOrientation;
+            self.launchOrientation = current == UIInterfaceOrientationLandscapeLeft
+                ? 1
+                : (current == UIInterfaceOrientationLandscapeRight ? 2 : 0);
+            break;
+        }
+    }
+
+    touchhle_ios_log_jit_status("legacy-app-launch");
     if (!touchhle_ios_jit_available()) {
         UIAlertController *alert = [UIAlertController
             alertControllerWithTitle:@"JIT не обнаружен"
@@ -338,8 +456,18 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     self.launchButton.enabled = NO;
     self.statusLabel.text = @"Запуск…";
 
-    DeadSpaceHostViewController *controls = [[DeadSpaceHostViewController alloc] init];
-    controls.orientationMask = UIInterfaceOrientationMaskLandscapeRight;
+    LegacyHostViewController *controls = [[LegacyHostViewController alloc] init];
+    switch (self.launchOrientation) {
+        case 1:
+            controls.orientationMask = UIInterfaceOrientationMaskLandscapeLeft;
+            break;
+        case 2:
+            controls.orientationMask = UIInterfaceOrientationMaskLandscapeRight;
+            break;
+        default:
+            controls.orientationMask = UIInterfaceOrientationMaskPortrait;
+            break;
+    }
     controls.view.backgroundColor = UIColor.clearColor;
 
     UIButton *exitButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -352,7 +480,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [exitButton addTarget:self action:@selector(exitGame:) forControlEvents:UIControlEventTouchUpInside];
     [controls.view addSubview:exitButton];
 
-    self.controlsWindow = [[DeadSpaceControlsWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.controlsWindow = [[LegacyControlsWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.controlsWindow.windowLevel = UIWindowLevelNormal + 3.0;
     self.controlsWindow.rootViewController = controls;
     self.controlsWindow.interactiveView = exitButton;
@@ -360,8 +488,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     self.controlsWindow.hidden = NO;
     self.hostWindow.hidden = YES;
 
-    [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationLandscapeRight)
-                                forKey:@"orientation"];
+    UIInterfaceOrientation deviceOrientation = UIInterfaceOrientationPortrait;
+    if (self.launchOrientation == 1) {
+        deviceOrientation = UIInterfaceOrientationLandscapeLeft;
+    } else if (self.launchOrientation == 2) {
+        deviceOrientation = UIInterfaceOrientationLandscapeRight;
+    }
+    [[UIDevice currentDevice] setValue:@(deviceOrientation) forKey:@"orientation"];
     [UIViewController attemptRotationToDeviceOrientation];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -370,9 +503,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             self.runGame,
             self.gameURL.path.fileSystemRepresentation,
             1,
-            2,
+            self.launchOrientation,
             0,
-            0
+            1
         );
         [self finishEmulationWithResult:result];
     });

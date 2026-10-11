@@ -1,4 +1,4 @@
-name: Build Dead Space Legacy for iOS 12
+name: Build Applesauce Legacy for iOS 12
 
 on:
   workflow_dispatch:
@@ -42,13 +42,13 @@ jobs:
           sh platform/ios/scripts/package-ipa.sh --chimera
           sh platform/ios/scripts/verify-ipa.sh \
             --chimera \
-            dist/DeadSpaceLegacy-iOS12-Chimera.ipa
+            dist/ApplesauceLegacy-iOS12-Chimera.ipa
 
       - name: Upload game-free package
         uses: actions/upload-artifact@v4
         with:
-          name: DeadSpaceLegacy-iOS12-Chimera
+          name: ApplesauceLegacy-iOS12-Chimera
           path: |
-            dist/DeadSpaceLegacy-iOS12-Chimera.ipa
-            dist/DeadSpaceLegacy-iOS12-Chimera.ipa.sha256
+            dist/ApplesauceLegacy-iOS12-Chimera.ipa
+            dist/ApplesauceLegacy-iOS12-Chimera.ipa.sha256
           if-no-files-found: error

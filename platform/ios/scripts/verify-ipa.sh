@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-[ -n "$IPA" ] || IPA="$REPO/dist/DeadSpaceLegacy-iOS12-unsigned.ipa"
+[ -n "$IPA" ] || IPA="$REPO/dist/ApplesauceLegacy-iOS12-unsigned.ipa"
 
 case "$IPA" in
     /*) ;;
@@ -165,7 +165,7 @@ BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
 BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
 
-if [ "$BUNDLE_ID" != "local.deadspace.legacy" ]; then
+if [ "$BUNDLE_ID" != "local.applesauce.legacy" ]; then
     echo "Unexpected bundle identifier: $BUNDLE_ID" >&2
     exit 1
 fi
