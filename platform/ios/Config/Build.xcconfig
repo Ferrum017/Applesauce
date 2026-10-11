@@ -1,16 +1,15 @@
-PRODUCT_NAME = Applesauce
-PRODUCT_BUNDLE_IDENTIFIER = io.github.johnny901901901.applesauce
-MARKETING_VERSION = 0.4.1
+PRODUCT_NAME = DeadSpaceLegacy
+PRODUCT_BUNDLE_IDENTIFIER = local.deadspace.legacy
+MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
-IPHONEOS_DEPLOYMENT_TARGET = 15.0
+IPHONEOS_DEPLOYMENT_TARGET = 12.0
 TARGETED_DEVICE_FAMILY = 1,2
 SUPPORTED_PLATFORMS = iphoneos iphonesimulator
 SDKROOT = iphoneos
 ARCHS = arm64
 CLANG_ENABLE_MODULES = YES
 CLANG_C_LANGUAGE_STANDARD = gnu17
-SWIFT_VERSION = 5.0
-SWIFT_OBJC_BRIDGING_HEADER = Sources/TouchHLEHost-Bridging-Header.h
+CLANG_ENABLE_OBJC_ARC = YES
 GCC_PREPROCESSOR_DEFINITIONS = $(inherited) GLES_SILENCE_DEPRECATION=1
 ENABLE_BITCODE = NO
 COPY_PHASE_STRIP = NO
@@ -34,7 +33,7 @@ SDL_SHARED_DIR[sdk=iphoneos*] = $(TOUCHHLE_REPO)/build/sdl-shared-iphoneos/insta
 HEADER_SEARCH_PATHS = $(inherited) "$(SDL_SHARED_DIR)/include/SDL2"
 LIBRARY_SEARCH_PATHS = $(inherited) "$(RUST_LIB_DIR)" "$(SDL_SHARED_DIR)/lib"
 LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
-OTHER_LDFLAGS = $(inherited) -ObjC -lSDL2main -lSDL2 -lc++ -liconv -framework AVFoundation -framework AudioToolbox -framework CoreBluetooth -framework CoreGraphics -framework CoreHaptics -framework CoreMotion -framework Foundation -framework GameController -framework Metal -framework OpenGLES -framework QuartzCore -framework UIKit
+OTHER_LDFLAGS = $(inherited) -ObjC -lSDL2main -lSDL2 -lc++ -liconv -framework AVFoundation -framework AudioToolbox -framework CoreBluetooth -framework CoreGraphics -weak_framework CoreHaptics -framework CoreMotion -framework Foundation -framework GameController -framework Metal -framework OpenGLES -framework QuartzCore -framework UIKit
 
 // Embed-Cores copies dylibs whose paths depend on the configuration, so it
 // cannot declare a fixed input/output file list.

@@ -17,11 +17,11 @@ while [ $# -gt 0 ]; do
         --trollstore)
             EXPECT=trollstore
             ;;
-        --trollstore-permanent-jit)
+        --chimera|--trollstore-permanent-jit)
             EXPECT=permanent
             ;;
         -h|--help)
-            echo "Usage: $0 [--trollstore | --trollstore-permanent-jit] [file.ipa]"
+            echo "Usage: $0 [--trollstore | --chimera | --trollstore-permanent-jit] [file.ipa]"
             exit 0
             ;;
         -*)
@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-[ -n "$IPA" ] || IPA="$REPO/dist/Applesauce-iOS-unsigned.ipa"
+[ -n "$IPA" ] || IPA="$REPO/dist/DeadSpaceLegacy-iOS12-unsigned.ipa"
 
 case "$IPA" in
     /*) ;;
@@ -47,15 +47,15 @@ if [ ! -f "$IPA" ]; then
     exit 1
 fi
 
-STAGE=$(mktemp -d "${TMPDIR:-/tmp}/applesauce-verify.XXXXXX")
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/deadspace-legacy-verify.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 
 unzip -tq "$IPA" >/dev/null
 unzip -q "$IPA" -d "$STAGE"
 
-APP="$STAGE/Payload/Applesauce.app"
+APP="$STAGE/Payload/DeadSpaceLegacy.app"
 if [ ! -d "$APP" ]; then
-    echo "Payload/Applesauce.app is missing." >&2
+    echo "Payload/DeadSpaceLegacy.app is missing." >&2
     exit 1
 fi
 
@@ -63,6 +63,22 @@ fi
 # separate build steps, so an unsigned host alone is not enough.
 find "$APP" -type f -print | while IFS= read -r binary; do
     file "$binary" | grep -q 'Mach-O' || continue
+    if ! file "$binary" | grep -q 'arm64'; then
+        echo "A Mach-O file is not arm64: $binary" >&2
+        exit 1
+    fi
+    min_ios=$(xcrun vtool -show-build "$binary" 2>/dev/null \
+        | awk '/^[[:space:]]*minos / { print $2; exit }')
+    if [ -z "$min_ios" ]; then
+        echo "Could not read the minimum iOS version from: $binary" >&2
+        exit 1
+    fi
+    if ! python3 -c \
+        'import sys; v=tuple(int(x) for x in sys.argv[1].split(".")); sys.exit(0 if v <= (12, 0) else 1)' \
+        "$min_ios" 2>/dev/null; then
+        echo "A Mach-O file requires iOS $min_ios instead of iOS 12.0: $binary" >&2
+        exit 1
+    fi
     team=$(codesign -dvvv "$binary" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')
     if [ -n "$team" ] && [ "$team" != 'not set' ]; then
         echo "A binary is signed with a developer identity. Refusing release validation." >&2
@@ -75,7 +91,7 @@ if ! command -v ldid >/dev/null 2>&1; then
     exit 1
 fi
 
-ENTITLEMENTS=$(ldid -e "$APP/Applesauce" 2>/dev/null || true)
+ENTITLEMENTS=$(ldid -e "$APP/DeadSpaceLegacy" 2>/dev/null || true)
 
 require_entitlement() {
     if ! printf '%s' "$ENTITLEMENTS" | python3 -c \
@@ -110,6 +126,7 @@ case "$EXPECT" in
         require_entitlement com.apple.developer.kernel.increased-memory-limit
         if [ "$EXPECT" = permanent ]; then
             require_entitlement dynamic-codesigning
+            require_entitlement com.apple.private.skip-library-validation
         else
             # Shipping this in the general TrollStore build would crash the app
             # on launch for every A12 and newer device.
@@ -146,12 +163,12 @@ BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
 BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
 
-if [ "$BUNDLE_ID" != "io.github.johnny901901901.applesauce" ]; then
+if [ "$BUNDLE_ID" != "local.deadspace.legacy" ]; then
     echo "Unexpected bundle identifier: $BUNDLE_ID" >&2
     exit 1
 fi
 
-file "$APP/Applesauce" | grep -q 'arm64'
+file "$APP/DeadSpaceLegacy" | grep -q 'arm64'
 
 echo "Verified $EXPECT IPA"
 echo "Bundle: $BUNDLE_ID"

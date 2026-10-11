@@ -3,7 +3,7 @@
 <!--
     Default TrollStore entitlements. Safe on every TrollStore-capable device.
 
-    Applied by: platform/ios/scripts/package-ipa.sh --trollstore
+    Applied by package-ipa.sh in TrollStore mode.
 
     These are kept out of TouchHLEHost.entitlements because the memory
     entitlements below need provisioning-profile support that a free Apple

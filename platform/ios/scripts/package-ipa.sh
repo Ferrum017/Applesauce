@@ -3,7 +3,9 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 REPO=$(CDPATH= cd -- "$ROOT/../.." && pwd)
-APP="$REPO/build/host-iphoneos/Build/Products/Release-iphoneos/Applesauce.app"
+APP="$REPO/build/host-iphoneos/Build/Products/Release-iphoneos/DeadSpaceLegacy.app"
+APP_NAME=DeadSpaceLegacy.app
+EXECUTABLE=DeadSpaceLegacy
 
 # Packaging modes:
 #
@@ -14,19 +16,21 @@ APP="$REPO/build/host-iphoneos/Build/Products/Release-iphoneos/Applesauce.app"
 #                               install, and get-task-allow is what makes its
 #                               "Enable JIT" option appear. Safe on every
 #                               TrollStore-capable device.
-#   --trollstore-permanent-jit  As above, plus dynamic-codesigning so JIT
-#                               survives relaunches. A11 and older ONLY; on
-#                               A12+ the app crashes on launch.
+#   --chimera                   Fakesign for Chimera/AppSync with permanent
+#                               JIT. Intended for this iOS 12 A7 build.
+#   --trollstore-permanent-jit  Backwards-compatible alias for --chimera.
 MODE=unsigned
 OUTPUT=
 
 usage() {
-    echo "Usage: $0 [--trollstore | --trollstore-permanent-jit] [output.ipa]"
+    echo "Usage: $0 [--trollstore | --chimera | --trollstore-permanent-jit] [output.ipa]"
     echo
     echo "  --trollstore                Fakesign so TrollStore can enable JIT"
     echo "                              per launch."
     echo "  --trollstore-permanent-jit  Also embed dynamic-codesigning"
     echo "                              (A11 and older only)."
+    echo "  --chimera                   Same permanent-JIT signature, named for"
+    echo "                              Chimera + AppSync on iOS 12."
 }
 
 while [ $# -gt 0 ]; do
@@ -34,7 +38,7 @@ while [ $# -gt 0 ]; do
         --trollstore)
             MODE=trollstore
             ;;
-        --trollstore-permanent-jit)
+        --chimera|--trollstore-permanent-jit)
             MODE=permanent
             ;;
         -h|--help)
@@ -60,15 +64,15 @@ done
 case "$MODE" in
     unsigned)
         ENTITLEMENTS=
-        DEFAULT_OUTPUT="$REPO/dist/Applesauce-iOS-unsigned.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-unsigned.ipa"
         ;;
     trollstore)
         ENTITLEMENTS="$ROOT/Config/TouchHLEHost-TrollStore.entitlements"
-        DEFAULT_OUTPUT="$REPO/dist/Applesauce-iOS-trollstore.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-debugger-jit.ipa"
         ;;
     permanent)
         ENTITLEMENTS="$ROOT/Config/TouchHLEHost-TrollStore-PermanentJIT.entitlements"
-        DEFAULT_OUTPUT="$REPO/dist/Applesauce-iOS-trollstore-permanent-jit.ipa"
+        DEFAULT_OUTPUT="$REPO/dist/DeadSpaceLegacy-iOS12-Chimera.ipa"
         ;;
 esac
 
@@ -112,12 +116,16 @@ STAGE=$(mktemp -d "${TMPDIR:-/tmp}/applesauce-ipa.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 
 mkdir -p "$STAGE/Payload" "$(dirname -- "$OUTPUT")"
-ditto "$APP" "$STAGE/Payload/Applesauce.app"
+ditto "$APP" "$STAGE/Payload/$APP_NAME"
 STRIP_TOOL=$(xcrun --find strip)
-"$STRIP_TOOL" -S -x "$STAGE/Payload/Applesauce.app/Applesauce"
+"$STRIP_TOOL" -S -x "$STAGE/Payload/$APP_NAME/$EXECUTABLE"
 
 if [ -n "$ENTITLEMENTS" ]; then
-    ldid "-S$ENTITLEMENTS" "$STAGE/Payload/Applesauce.app/Applesauce"
+    find "$STAGE/Payload/$APP_NAME/Frameworks" -type f -print | while IFS= read -r binary; do
+        file "$binary" | grep -q 'Mach-O' || continue
+        ldid -S "$binary"
+    done
+    ldid "-S$ENTITLEMENTS" "$STAGE/Payload/$APP_NAME/$EXECUTABLE"
     echo "Fakesigned with entitlements from $ENTITLEMENTS"
 fi
 

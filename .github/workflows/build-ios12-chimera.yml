@@ -1,0 +1,54 @@
+name: Build Dead Space Legacy for iOS 12
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "platform/ios/**"
+      - "platform/ios12/**"
+      - ".github/workflows/build-ios12-chimera.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select build tools
+        run: |
+          set -eux
+          xcodebuild -version
+          rustup target add aarch64-apple-ios
+          brew install cmake ninja boost ldid
+
+      - name: Build SDL, HyperHLE and iOS host
+        run: |
+          set -eux
+          export TOUCHHLE_BOOST_ROOT="$(brew --prefix boost)/include"
+          sh platform/ios/scripts/build-sdl-shared.sh iphoneos
+          sh platform/ios/scripts/build-host.sh iphoneos Release
+
+      - name: Package for Chimera and AppSync Unified
+        run: |
+          set -eux
+          sh platform/ios/scripts/package-ipa.sh --chimera
+          sh platform/ios/scripts/verify-ipa.sh \
+            --chimera \
+            dist/DeadSpaceLegacy-iOS12-Chimera.ipa
+
+      - name: Upload game-free package
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeadSpaceLegacy-iOS12-Chimera
+          path: |
+            dist/DeadSpaceLegacy-iOS12-Chimera.ipa
+            dist/DeadSpaceLegacy-iOS12-Chimera.ipa.sha256
+          if-no-files-found: error

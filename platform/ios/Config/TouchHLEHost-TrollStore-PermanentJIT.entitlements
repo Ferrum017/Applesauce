@@ -14,7 +14,7 @@
     On A12+ use TouchHLEHost-TrollStore.entitlements instead and enable JIT per
     launch through TrollStore.
 
-    Applied by: platform/ios/scripts/package-ipa.sh --trollstore-permanent-jit
+    Applied by package-ipa.sh in permanent-JIT/Chimera mode.
 -->
 <plist version="1.0">
 <dict>
@@ -24,6 +24,10 @@
 
 	<!-- Permanent RWX memory for Dynarmic. A11 and older only. -->
 	<key>dynamic-codesigning</key>
+	<true/>
+
+	<!-- Chimera/AppSync: allow the ad-hoc embedded SDL and emulator dylibs. -->
+	<key>com.apple.private.skip-library-validation</key>
 	<true/>
 
 	<!-- See TouchHLEHost-TrollStore.entitlements for why these are needed. -->
