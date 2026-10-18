@@ -159,6 +159,43 @@ void touchhle_ios_log_jit_status(const char *context) {
 
 static FILE *diagnostic_log;
 
+static void redirect_diagnostics_to_directory(NSString *directory) {
+    const char *directory_path = directory.fileSystemRepresentation;
+    if (directory_path == NULL) {
+        return;
+    }
+
+    char log_path[PATH_MAX];
+    int length = snprintf(log_path, sizeof(log_path), "%s/touchhle-host.log", directory_path);
+    if (length < 0 || (size_t)length >= sizeof(log_path)) {
+        return;
+    }
+
+    char previous_path[PATH_MAX];
+    length = snprintf(
+        previous_path,
+        sizeof(previous_path),
+        "%s/touchhle-host-previous.log",
+        directory_path
+    );
+    if (length > 0 && (size_t)length < sizeof(previous_path)) {
+        rename(log_path, previous_path);
+    }
+
+    FILE *new_log = fopen(log_path, "w");
+    if (new_log == NULL) {
+        return;
+    }
+    if (diagnostic_log != NULL) {
+        fclose(diagnostic_log);
+    }
+    diagnostic_log = new_log;
+    setvbuf(diagnostic_log, NULL, _IONBF, 0);
+    dup2(fileno(diagnostic_log), STDOUT_FILENO);
+    dup2(fileno(diagnostic_log), STDERR_FILENO);
+    fprintf(stderr, "touchHLE iOS port diagnostics started\n");
+}
+
 static void redirect_diagnostics(void) {
     NSArray<NSString *> *document_paths = NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory,
@@ -166,40 +203,7 @@ static void redirect_diagnostics(void) {
         YES
     );
     NSString *documents = document_paths.firstObject;
-    const char *documents_path = documents.fileSystemRepresentation;
-    if (documents_path == NULL) {
-        return;
-    }
-
-    char log_path[PATH_MAX];
-    int length = snprintf(log_path, sizeof(log_path), "%s/touchhle-host.log", documents_path);
-    if (length < 0 || (size_t)length >= sizeof(log_path)) {
-        return;
-    }
-
-    // If a game hangs, the only way out is to force-quit, and the next launch
-    // would truncate the log that recorded the hang. Keep one generation back
-    // so the interesting session survives the relaunch needed to retrieve it.
-    char previous_path[PATH_MAX];
-    length = snprintf(
-        previous_path,
-        sizeof(previous_path),
-        "%s/touchhle-host-previous.log",
-        documents_path
-    );
-    if (length > 0 && (size_t)length < sizeof(previous_path)) {
-        rename(log_path, previous_path);
-    }
-
-    diagnostic_log = fopen(log_path, "w");
-    if (diagnostic_log == NULL) {
-        return;
-    }
-
-    setvbuf(diagnostic_log, NULL, _IONBF, 0);
-    dup2(fileno(diagnostic_log), STDOUT_FILENO);
-    dup2(fileno(diagnostic_log), STDERR_FILENO);
-    fprintf(stderr, "touchHLE iOS port diagnostics started\n");
+    redirect_diagnostics_to_directory(documents);
 }
 
 static void start_native_host(void) {
@@ -224,6 +228,14 @@ int32_t touchhle_ios_launch_game(
     if (run_game == NULL) {
         fprintf(stderr, "touchHLE failed: no emulator core was loaded\n");
         return 1;
+    }
+
+    // Re-open the log beside the selected IPA. That directory is known to be
+    // writable even on older HouseArrest/AppSync combinations where resolving
+    // NSDocumentDirectory during process startup can fail.
+    NSString *game_path = path == NULL ? nil : [NSString stringWithUTF8String:path];
+    if (game_path != nil) {
+        redirect_diagnostics_to_directory(game_path.stringByDeletingLastPathComponent);
     }
 
     const char *orientation_hint = "Portrait";

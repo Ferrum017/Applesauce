@@ -12,6 +12,9 @@ typedef int32_t (*TouchHLEIOSRunGameFn)(
     int32_t analog_stick_tilt_controls
 );
 typedef void (*TouchHLEIOSRequestExitFn)(void);
+typedef void *(*TouchHLEIOSMetadataCreateFn)(const char *path);
+typedef uint32_t (*TouchHLEIOSMetadataNumberFn)(const void *metadata);
+typedef void (*TouchHLEIOSMetadataFreeFn)(void *metadata);
 
 extern bool touchhle_ios_jit_available(void);
 extern void touchhle_ios_log_jit_status(const char *context);
@@ -57,6 +60,9 @@ extern int32_t touchhle_ios_launch_game(
 }
 
 - (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    if (self.orientationMask == UIInterfaceOrientationMaskLandscapeLeft) {
+        return UIInterfaceOrientationLandscapeLeft;
+    }
     if (self.orientationMask == UIInterfaceOrientationMaskLandscapeRight) {
         return UIInterfaceOrientationLandscapeRight;
     }
@@ -79,6 +85,10 @@ extern int32_t touchhle_ios_launch_game(
 @property(nonatomic, assign) void *coreHandle;
 @property(nonatomic, assign) TouchHLEIOSRunGameFn runGame;
 @property(nonatomic, assign) TouchHLEIOSRequestExitFn requestExit;
+@property(nonatomic, assign) TouchHLEIOSMetadataCreateFn metadataCreate;
+@property(nonatomic, assign) TouchHLEIOSMetadataNumberFn metadataOrientationCapabilities;
+@property(nonatomic, assign) TouchHLEIOSMetadataFreeFn metadataFree;
+- (void)waitForGameSurfaceWithAttempts:(NSInteger)remainingAttempts;
 @end
 
 @implementation TouchHLENativeHost
@@ -389,6 +399,18 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     self.runGame = (TouchHLEIOSRunGameFn)dlsym(self.coreHandle, "touchhle_ios_run_game");
     self.requestExit = (TouchHLEIOSRequestExitFn)dlsym(self.coreHandle, "touchhle_ios_request_exit");
+    self.metadataCreate = (TouchHLEIOSMetadataCreateFn)dlsym(
+        self.coreHandle,
+        "touchhle_ios_game_metadata_create"
+    );
+    self.metadataOrientationCapabilities = (TouchHLEIOSMetadataNumberFn)dlsym(
+        self.coreHandle,
+        "touchhle_ios_game_metadata_orientation_capabilities"
+    );
+    self.metadataFree = (TouchHLEIOSMetadataFreeFn)dlsym(
+        self.coreHandle,
+        "touchhle_ios_game_metadata_free"
+    );
     if (self.runGame == NULL) {
         if (errorMessage != NULL) {
             *errorMessage = @"В emulator core отсутствует touchhle_ios_run_game";
@@ -423,9 +445,28 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             break;
         default: {
             UIInterfaceOrientation current = UIApplication.sharedApplication.statusBarOrientation;
-            self.launchOrientation = current == UIInterfaceOrientationLandscapeLeft
-                ? 1
-                : (current == UIInterfaceOrientationLandscapeRight ? 2 : 0);
+            uint32_t capabilities = 0;
+            if (self.metadataCreate != NULL
+                && self.metadataOrientationCapabilities != NULL
+                && self.metadataFree != NULL) {
+                void *metadata = self.metadataCreate(self.gameURL.path.fileSystemRepresentation);
+                if (metadata != NULL) {
+                    capabilities = self.metadataOrientationCapabilities(metadata);
+                    self.metadataFree(metadata);
+                }
+            }
+
+            BOOL supportsPortrait = (capabilities & 1u) != 0;
+            BOOL supportsLandscape = (capabilities & 2u) != 0;
+            if (supportsLandscape && !supportsPortrait) {
+                self.launchOrientation = current == UIInterfaceOrientationLandscapeRight ? 2 : 1;
+            } else if (supportsPortrait && !supportsLandscape) {
+                self.launchOrientation = 0;
+            } else {
+                self.launchOrientation = current == UIInterfaceOrientationLandscapeLeft
+                    ? 1
+                    : (current == UIInterfaceOrientationLandscapeRight ? 2 : 0);
+            }
             break;
         }
     }
@@ -497,6 +538,43 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [[UIDevice currentDevice] setValue:@(deviceOrientation) forKey:@"orientation"];
     [UIViewController attemptRotationToDeviceOrientation];
 
+    [self waitForGameSurfaceWithAttempts:60];
+}
+
+- (void)waitForGameSurfaceWithAttempts:(NSInteger)remainingAttempts {
+    UIInterfaceOrientation actual = UIApplication.sharedApplication.statusBarOrientation;
+    BOOL expectsLandscape = self.launchOrientation == 1 || self.launchOrientation == 2;
+    BOOL hasExpectedOrientation = expectsLandscape
+        ? UIInterfaceOrientationIsLandscape(actual)
+        : UIInterfaceOrientationIsPortrait(actual);
+
+    CGRect bounds = UIScreen.mainScreen.bounds;
+    BOOL hasExpectedShape = expectsLandscape
+        ? CGRectGetWidth(bounds) > CGRectGetHeight(bounds)
+        : CGRectGetHeight(bounds) >= CGRectGetWidth(bounds);
+
+    if ((!hasExpectedOrientation || !hasExpectedShape) && remainingAttempts > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self waitForGameSurfaceWithAttempts:remainingAttempts - 1];
+        });
+        return;
+    }
+
+    self.controlsWindow.frame = bounds;
+    [self.controlsWindow layoutIfNeeded];
+    NSLog(
+        @"touchHLE game surface ready: orientation=%ld bounds=%dx%d attempts_left=%ld",
+        (long)actual,
+        (int)CGRectGetWidth(bounds),
+        (int)CGRectGetHeight(bounds),
+        (long)remainingAttempts
+    );
+
+    // Returning to the main run loop after the geometry looks correct is not
+    // enough on iOS 12: the scene transaction commits a little later. Starting
+    // Dynarmic while it is still in flight makes SpringBoard kill the app with
+    // a scene-update watchdog violation.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         int32_t result = touchhle_ios_launch_game(
