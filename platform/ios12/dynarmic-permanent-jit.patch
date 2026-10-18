@@ -1,32 +1,21 @@
 diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/include/oaknut/code_block.hpp
-index 559f7ca..723fae7 100644
+index 559f7ca..127c11d 100644
 --- a/externals/oaknut/include/oaknut/code_block.hpp
 +++ b/externals/oaknut/include/oaknut/code_block.hpp
-@@ -41,6 +41,35 @@ inline ReusableJitRegion& reusable_jit_region()
+@@ -41,6 +41,24 @@ inline ReusableJitRegion& reusable_jit_region()
      return region;
  }
  
-+// AltJIT-style debuggers allocate executable memory by handling the
-+// brk #0xf00d protocol below.  A jailbroken iOS 12 process carrying the
-+// dynamic-codesigning entitlement does not have such a debugger attached,
-+// however: it can allocate executable memory itself.  Prefer that path when
-+// the kernel really grants execute permission, and fall back to the debugger
-+// protocol otherwise.
-+//
-+// iOS requires writable-executable memory to be requested in one mmap call.
-+// Mapping RW and adding execute permission later with mprotect is rejected,
-+// even when dynamic-codesigning is present.
++// Jailbroken iOS 12 can allow dynamically generated code without an AltJIT
++// debugger being present to service the brk protocol below. Keep the mapping
++// writable while Dynarmic emits code, then switch it to executable in
++// CodeBlock::protect(). This avoids requiring simultaneous W+X permission.
 +inline std::uint32_t* prepare_permanent_jit_region(std::size_t size)
 +{
-+    int flags = MAP_ANON | MAP_PRIVATE;
-+#    if defined(MAP_JIT)
-+    flags |= MAP_JIT;
-+#    endif
-+
 +    void* mapping = mmap(nullptr,
 +                         size,
-+                         PROT_READ | PROT_WRITE | PROT_EXEC,
-+                         flags,
++                         PROT_READ | PROT_WRITE,
++                         MAP_ANON | MAP_PRIVATE,
 +                         -1,
 +                         0);
 +    if (mapping == MAP_FAILED)
@@ -38,16 +27,19 @@ index 559f7ca..723fae7 100644
  __attribute__((noinline, optnone, naked)) static void* prepare_jit_region(void*, std::size_t)
  {
      __asm__ volatile(
-@@ -78,6 +107,16 @@ public:
+@@ -77,7 +95,19 @@ public:
+             m_memory = reusable_region.memory;
              m_wmemory = reusable_region.writable_memory;
++            m_uses_permanent_jit_region = m_memory == m_wmemory;
              reusable_region.in_use = true;
          } else {
-+            // Chimera/AppSync can preserve dynamic-codesigning on iOS 12.
-+            // In that configuration no debugger exists to service Oaknut's
-+            // brk request, so use the directly executable mapping instead.
++            // Chimera/AppSync can preserve dynamic-codesigning without
++            // attaching the special debugger expected by Oaknut. Prefer a
++            // normal mapping whose protection we toggle between RW and RX.
 +            m_memory = detail::prepare_permanent_jit_region(size);
 +            if (m_memory != nullptr) {
 +                m_wmemory = m_memory;
++                m_uses_permanent_jit_region = true;
 +                reusable_region = {m_memory, m_wmemory, size, true};
 +                return;
 +            }
@@ -55,3 +47,34 @@ index 559f7ca..723fae7 100644
              m_memory = (std::uint32_t*)detail::prepare_jit_region(nullptr, size);
              if (m_memory == nullptr)
                  throw std::bad_alloc{};
+@@ -181,6 +211,11 @@ public:
+         pthread_jit_write_protect_np(1);
+ #elif defined(__APPLE__) && TARGET_OS_IPHONE && TARGET_OS_SIMULATOR
+         mprotect(m_memory, m_size, PROT_READ | PROT_EXEC);
++#elif defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++        if (m_uses_permanent_jit_region &&
++            mprotect(m_memory, m_size, PROT_READ | PROT_EXEC) != 0) {
++            throw std::bad_alloc{};
++        }
+ #elif defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_EXEC);
+ #endif
+@@ -192,6 +227,11 @@ public:
+         pthread_jit_write_protect_np(0);
+ #elif defined(__APPLE__) && TARGET_OS_IPHONE && TARGET_OS_SIMULATOR
+         mprotect(m_memory, m_size, PROT_READ | PROT_WRITE);
++#elif defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++        if (m_uses_permanent_jit_region &&
++            mprotect(m_memory, m_size, PROT_READ | PROT_WRITE) != 0) {
++            throw std::bad_alloc{};
++        }
+ #elif defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_WRITE);
+ #endif
+@@ -260,5 +300,6 @@ protected:
+     std::size_t m_size = 0;
+ #if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+     bool m_should_detach_jit_server = false;
++    bool m_uses_permanent_jit_region = false;
+ #endif
+ };

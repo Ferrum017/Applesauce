@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <cstdio>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
 #include "dynarmic/interface/A32/coprocessor.h"
@@ -231,6 +235,11 @@ class DynarmicWrapper {
 public:
   DynarmicWrapper(void *direct_memory_access_ptr, size_t null_page_count) {
     Dynarmic::A32::UserConfig user_config;
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // The iPad mini 3 has only 1 GiB of RAM. Dynarmic's 128 MiB default code
+    // cache is unnecessarily large for the games supported by this build.
+    user_config.code_cache_size = 32 * 1024 * 1024;
+#endif
     user_config.callbacks = &env;
     user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
     mon = std::make_unique<Dynarmic::ExclusiveMonitor>(1);

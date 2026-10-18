@@ -110,21 +110,16 @@ static bool touchhle_has_dynamic_codesigning(void) {
     return granted;
 }
 
-// iOS permits JIT pages only when RWX is requested by a single mmap call.
-// Mapping RW and adding execute permission later with mprotect is rejected,
-// even when dynamic-codesigning is present.
+// Probe the same W^X transition used by the patched Dynarmic allocator. A
+// debugger flag alone is not sufficient: some jailbreak injection layers set
+// it without installing Oaknut's brk handler.
 static bool touchhle_can_allocate_executable_memory(void) {
     const size_t size = (size_t)getpagesize();
-    int flags = MAP_ANON | MAP_PRIVATE;
-#ifdef MAP_JIT
-    flags |= MAP_JIT;
-#endif
-
     void *mapping = mmap(
         NULL,
         size,
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-        flags,
+        PROT_READ | PROT_WRITE,
+        MAP_ANON | MAP_PRIVATE,
         -1,
         0
     );
@@ -132,28 +127,27 @@ static bool touchhle_can_allocate_executable_memory(void) {
         return false;
     }
 
+    bool available = mprotect(mapping, size, PROT_READ | PROT_EXEC) == 0
+        && mprotect(mapping, size, PROT_READ | PROT_WRITE) == 0;
     munmap(mapping, size);
-    return true;
+    return available;
 }
 
 bool touchhle_ios_jit_available(void) {
-    return touchhle_ios_jit_is_from_debugger()
-        || (touchhle_has_dynamic_codesigning()
-            && touchhle_can_allocate_executable_memory());
+    return touchhle_can_allocate_executable_memory();
 }
 
 void touchhle_ios_log_jit_status(const char *context) {
     unsigned int flags = 0;
     int result = csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags));
     bool entitlement = touchhle_has_dynamic_codesigning();
-    bool executable_mapping = entitlement
-        && touchhle_can_allocate_executable_memory();
+    bool executable_mapping = touchhle_can_allocate_executable_memory();
     fprintf(
         stderr,
         "touchHLE JIT [%s]: available=%d debugger=%d entitlement=%d executable_mapping=%d "
         "cs_flags=0x%08x csops=%d/%d\n",
         context ? context : "?",
-        touchhle_ios_jit_is_from_debugger() || executable_mapping,
+        executable_mapping,
         touchhle_ios_jit_is_from_debugger(),
         entitlement,
         executable_mapping,
@@ -166,13 +160,19 @@ void touchhle_ios_log_jit_status(const char *context) {
 static FILE *diagnostic_log;
 
 static void redirect_diagnostics(void) {
-    const char *home = getenv("HOME");
-    if (home == NULL) {
+    NSArray<NSString *> *document_paths = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory,
+        NSUserDomainMask,
+        YES
+    );
+    NSString *documents = document_paths.firstObject;
+    const char *documents_path = documents.fileSystemRepresentation;
+    if (documents_path == NULL) {
         return;
     }
 
     char log_path[PATH_MAX];
-    int length = snprintf(log_path, sizeof(log_path), "%s/Documents/touchhle-host.log", home);
+    int length = snprintf(log_path, sizeof(log_path), "%s/touchhle-host.log", documents_path);
     if (length < 0 || (size_t)length >= sizeof(log_path)) {
         return;
     }
@@ -184,8 +184,8 @@ static void redirect_diagnostics(void) {
     length = snprintf(
         previous_path,
         sizeof(previous_path),
-        "%s/Documents/touchhle-host-previous.log",
-        home
+        "%s/touchhle-host-previous.log",
+        documents_path
     );
     if (length > 0 && (size_t)length < sizeof(previous_path)) {
         rename(log_path, previous_path);
