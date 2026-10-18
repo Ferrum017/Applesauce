@@ -110,10 +110,9 @@ static bool touchhle_has_dynamic_codesigning(void) {
     return granted;
 }
 
-// Verify what the kernel granted, rather than trusting the entitlement string
-// alone.  AppSync can preserve an entitlement in the signature even when the
-// kernel refuses its capability.  Allocate writable memory first and require
-// the kernel to accept an explicit transition to RWX.
+// iOS permits JIT pages only when RWX is requested by a single mmap call.
+// Mapping RW and adding execute permission later with mprotect is rejected,
+// even when dynamic-codesigning is present.
 static bool touchhle_can_allocate_executable_memory(void) {
     const size_t size = (size_t)getpagesize();
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -124,7 +123,7 @@ static bool touchhle_can_allocate_executable_memory(void) {
     void *mapping = mmap(
         NULL,
         size,
-        PROT_READ | PROT_WRITE,
+        PROT_READ | PROT_WRITE | PROT_EXEC,
         flags,
         -1,
         0
@@ -133,13 +132,8 @@ static bool touchhle_can_allocate_executable_memory(void) {
         return false;
     }
 
-    bool executable = mprotect(
-        mapping,
-        size,
-        PROT_READ | PROT_WRITE | PROT_EXEC
-    ) == 0;
     munmap(mapping, size);
-    return executable;
+    return true;
 }
 
 bool touchhle_ios_jit_available(void) {
@@ -148,8 +142,6 @@ bool touchhle_ios_jit_available(void) {
             && touchhle_can_allocate_executable_memory());
 }
 
-// The probe above must require a successful mprotect transition. Merely
-// checking MAP_FAILED produces a false positive on iOS.
 void touchhle_ios_log_jit_status(const char *context) {
     unsigned int flags = 0;
     int result = csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags));

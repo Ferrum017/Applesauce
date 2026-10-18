@@ -2,7 +2,7 @@ diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/i
 index 559f7ca..723fae7 100644
 --- a/externals/oaknut/include/oaknut/code_block.hpp
 +++ b/externals/oaknut/include/oaknut/code_block.hpp
-@@ -41,6 +41,34 @@ inline ReusableJitRegion& reusable_jit_region()
+@@ -41,6 +41,35 @@ inline ReusableJitRegion& reusable_jit_region()
      return region;
  }
  
@@ -13,8 +13,9 @@ index 559f7ca..723fae7 100644
 +// the kernel really grants execute permission, and fall back to the debugger
 +// protocol otherwise.
 +//
-+// Checking mmap's returned pointer is not enough.  Require the kernel to
-+// accept an explicit transition from writable memory to RWX.
++// iOS requires writable-executable memory to be requested in one mmap call.
++// Mapping RW and adding execute permission later with mprotect is rejected,
++// even when dynamic-codesigning is present.
 +inline std::uint32_t* prepare_permanent_jit_region(std::size_t size)
 +{
 +    int flags = MAP_ANON | MAP_PRIVATE;
@@ -22,14 +23,14 @@ index 559f7ca..723fae7 100644
 +    flags |= MAP_JIT;
 +#    endif
 +
-+    void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
++    void* mapping = mmap(nullptr,
++                         size,
++                         PROT_READ | PROT_WRITE | PROT_EXEC,
++                         flags,
++                         -1,
++                         0);
 +    if (mapping == MAP_FAILED)
 +        return nullptr;
-+
-+    if (mprotect(mapping, size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-+        munmap(mapping, size);
-+        return nullptr;
-+    }
 +
 +    return static_cast<std::uint32_t*>(mapping);
 +}
@@ -37,7 +38,7 @@ index 559f7ca..723fae7 100644
  __attribute__((noinline, optnone, naked)) static void* prepare_jit_region(void*, std::size_t)
  {
      __asm__ volatile(
-@@ -78,6 +106,16 @@ public:
+@@ -78,6 +107,16 @@ public:
              m_wmemory = reusable_region.writable_memory;
              reusable_region.in_use = true;
          } else {
