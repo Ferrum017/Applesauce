@@ -498,9 +498,9 @@ impl GuestFile {
         !matches!(self, GuestFile::Socket)
     }
 
-    /// Duplicate this file descriptor, creating an independent handle that
-    /// shares the underlying kernel file description (for `GuestFile::File`)
-    /// or creates a new cursor at the same position (for IPA/resource files).
+    /// Duplicate this file descriptor. Host and disk-backed IPA files share
+    /// the underlying kernel file description; memory-backed IPA files create
+    /// a new cursor at the same position.
     /// This is used to implement POSIX `dup(2)` / `fcntl(F_DUPFD)`.
     pub fn try_clone(&self) -> std::io::Result<GuestFile> {
         match self {
@@ -509,8 +509,8 @@ impl GuestFile {
                 Ok(GuestFile::File(cloned))
             }
             GuestFile::IpaBundleFile(ipa_file) => {
-                // IpaFile uses Cursor<Rc<[u8]>> — clone shares the data and
-                // copies the seek position.
+                // IpaFile handles platform-specific backing storage and the
+                // corresponding descriptor semantics.
                 Ok(GuestFile::IpaBundleFile(ipa_file.clone()))
             }
             GuestFile::ResourceFile(_) => {

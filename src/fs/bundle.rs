@@ -8,11 +8,16 @@
 use crate::fs::{FsNode, GuestPath};
 use crate::libc::time::{calendar_date_to_timestamp, time_t, tm};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+#[cfg(not(target_os = "ios"))]
+use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io::{Cursor, Read};
+#[cfg(not(target_os = "ios"))]
+use std::io::Cursor;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(not(target_os = "ios"))]
 use zip::result::ZipError;
 use zip::ZipArchive;
 
@@ -210,17 +215,13 @@ struct ArchivedFileMetadata {
 /// Seeking in compressed files is hard, so the simple solution is to read the
 /// whole file into memory. This is shared so having multiple copies of the same
 /// file open won't waste memory.
+#[cfg(not(target_os = "ios"))]
 type DecompressedFile = Rc<[u8]>;
 
-// iOS 12 gives this process a roughly 700 MiB resident-memory limit on the
-// iPad mini 3. Keeping every file ever opened from a large IPA decompressed in
-// RAM reaches that limit within minutes. Retain a small LRU working set while
-// still allowing simultaneously open handles to share the same allocation.
-#[cfg(target_os = "ios")]
-const ARCHIVE_CACHE_CAPACITY: usize = 32 * 1024 * 1024;
 #[cfg(not(target_os = "ios"))]
 const ARCHIVE_CACHE_CAPACITY: usize = usize::MAX;
 
+#[cfg(not(target_os = "ios"))]
 #[derive(Debug)]
 struct ArchiveFileCache {
     files: HashMap<usize, DecompressedFile>,
@@ -228,6 +229,7 @@ struct ArchiveFileCache {
     bytes: usize,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl ArchiveFileCache {
     fn new() -> Self {
         Self {
@@ -268,6 +270,78 @@ impl ArchiveFileCache {
     }
 }
 
+// iOS 12 gives this process a roughly 700 MiB resident-memory limit on the
+// iPad mini 3. Some games contain more than 800 MiB of uncompressed resources
+// and keep many file descriptors open, so even a bounded in-memory cache is
+// insufficient: open handles continue to pin their complete buffers. Store
+// decompressed entries in the app's native temporary directory instead. The
+// kernel can reclaim clean file-system cache pages under memory pressure.
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+struct ArchiveFileCache {
+    directory: PathBuf,
+    files: HashMap<usize, PathBuf>,
+}
+
+#[cfg(target_os = "ios")]
+impl ArchiveFileCache {
+    fn new() -> Self {
+        let directory = std::env::temp_dir().join("touchHLE-ipa-cache");
+        match std::fs::remove_dir_all(&directory) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log!(
+                "Warning: could not clear stale IPA disk cache at {:?}: {}",
+                directory,
+                e
+            ),
+        }
+        std::fs::create_dir_all(&directory).unwrap_or_else(|e| {
+            panic!(
+                "Could not create IPA disk cache directory {:?}: {}",
+                directory, e
+            )
+        });
+        Self {
+            directory,
+            files: HashMap::new(),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<PathBuf> {
+        self.files.get(&index).cloned()
+    }
+
+    fn paths_for(&self, index: usize) -> (PathBuf, PathBuf) {
+        let final_path = self.directory.join(index.to_string());
+        let partial_path = self.directory.join(format!("{index}.partial"));
+        (final_path, partial_path)
+    }
+
+    fn insert(&mut self, index: usize, path: PathBuf) {
+        self.files.insert(index, path);
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.files.remove(&index);
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for ArchiveFileCache {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.directory) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log!(
+                    "Warning: could not remove IPA disk cache at {:?}: {}",
+                    self.directory,
+                    e
+                );
+            }
+        }
+    }
+}
+
 /// Represents a file inside an IPA bundle that can be opened.
 #[derive(Debug)]
 pub struct IpaFileRef {
@@ -279,6 +353,18 @@ pub struct IpaFileRef {
 
 impl IpaFileRef {
     pub fn open(&self) -> IpaFile {
+        #[cfg(target_os = "ios")]
+        {
+            self.open_disk_backed()
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.open_memory_backed()
+        }
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    fn open_memory_backed(&self) -> IpaFile {
         // Some games, like THPS2, use a single resource bundle file which is
         // opened each time a new game resource is being read.
         // As IPA is basically an archive, this pattern requires unzipping to be
@@ -369,6 +455,100 @@ impl IpaFileRef {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    fn open_disk_backed(&self) -> IpaFile {
+        let cached_path = self.archive_files_cache.borrow().get(self.index);
+        if let Some(path) = cached_path {
+            match std::fs::File::open(&path) {
+                Ok(file) => return IpaFile { file },
+                Err(e) => {
+                    log!(
+                        "Warning: cached IPA entry {} at {:?} disappeared: {}; extracting it again.",
+                        self.index,
+                        path,
+                        e
+                    );
+                    self.archive_files_cache.borrow_mut().remove(self.index);
+                }
+            }
+        }
+
+        let (final_path, partial_path) = self
+            .archive_files_cache
+            .borrow()
+            .paths_for(self.index);
+        let mut output = std::fs::File::create(&partial_path).unwrap_or_else(|e| {
+            panic!(
+                "Could not create disk cache for IPA entry {} at {:?}: {}",
+                self.index, partial_path, e
+            )
+        });
+
+        let metadata = {
+            let mut archive = (*self.archive).borrow_mut();
+            let metadata = match archive.by_index(self.index) {
+                Ok(mut file) => {
+                    let modified = file.last_modified();
+                    let tm = tm::from(
+                        modified.year(),
+                        modified.month(),
+                        modified.day(),
+                        modified.hour(),
+                        modified.minute(),
+                        modified.second(),
+                    );
+                    let size = file.size();
+                    if let Err(e) = std::io::copy(&mut file, &mut output) {
+                        log!(
+                            "Warning: IpaFileRef::open(): IO error extracting IPA entry {} to disk: {}; returning partial file to guest.",
+                            self.index,
+                            e
+                        );
+                    }
+                    ArchivedFileMetadata {
+                        last_modified: calendar_date_to_timestamp(tm).into(),
+                        size,
+                    }
+                }
+                Err(e) => {
+                    log!(
+                        "Warning: IpaFileRef::open(): could not open IPA entry {}: {}; returning empty file to guest.",
+                        self.index,
+                        e
+                    );
+                    ArchivedFileMetadata {
+                        last_modified: 0,
+                        size: 0,
+                    }
+                }
+            };
+            metadata
+        };
+        drop(output);
+
+        std::fs::rename(&partial_path, &final_path).unwrap_or_else(|e| {
+            panic!(
+                "Could not finalize disk cache for IPA entry {} from {:?} to {:?}: {}",
+                self.index, partial_path, final_path, e
+            )
+        });
+        self.archive_files_cache
+            .borrow_mut()
+            .insert(self.index, final_path.clone());
+        self.metadata_map
+            .borrow_mut()
+            .entry(self.index)
+            .or_insert(metadata);
+
+        let file = std::fs::File::open(&final_path).unwrap_or_else(|e| {
+            panic!(
+                "Could not reopen disk-cached IPA entry {} at {:?}: {}",
+                self.index, final_path, e
+            )
+        });
+        IpaFile { file }
+    }
+
     fn ensure_metadata(&self) {
         if self.metadata_map.borrow().contains_key(&self.index) {
             return;
@@ -429,15 +609,42 @@ impl IpaFileRef {
 }
 
 /// Represents an opened file in an IPA bundle.
-#[derive(Clone)]
 pub struct IpaFile {
+    #[cfg(not(target_os = "ios"))]
     file: Cursor<DecompressedFile>,
+    #[cfg(target_os = "ios")]
+    file: std::fs::File,
+}
+
+impl Clone for IpaFile {
+    fn clone(&self) -> Self {
+        #[cfg(not(target_os = "ios"))]
+        {
+            Self {
+                file: self.file.clone(),
+            }
+        }
+        #[cfg(target_os = "ios")]
+        {
+            Self {
+                // This matches POSIX dup semantics: both descriptors share a
+                // file offset, just like GuestFile::File.
+                file: self.file.try_clone().unwrap_or_else(|e| {
+                    panic!("Could not duplicate disk-cached IPA file: {e}")
+                }),
+            }
+        }
+    }
 }
 
 impl Debug for IpaFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(not(target_os = "ios"))]
+        let size = self.file.get_ref().len();
+        #[cfg(target_os = "ios")]
+        let size = self.file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         f.debug_struct("IpaFile")
-            .field("size", &self.file.get_ref().len())
+            .field("size", &size)
             .finish()
     }
 }
