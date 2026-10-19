@@ -215,6 +215,15 @@ com.digitalchocolate.iwall: --force-composition
 # NFSU
 com.ea.nfsucinc: --force-composition
 
+# Dead Space
+# The game's EAGL layer must be composited. Treating it as the direct
+# fullscreen presentation layer produces audio and a live render loop but a
+# permanently black screen, especially for the iPad build.
+com.ea.deadspace.bv: --force-composition
+com.ea.deadspace.inc: --force-composition
+com.ea.deadspace.ipad.bv: --force-composition
+com.ea.deadspace.ipad.inc: --force-composition
+
 # BOF
 com.gameloft.BladesOfFury: --force-composition
 
