@@ -510,6 +510,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             break;
     }
     controls.view.backgroundColor = UIColor.clearColor;
+    controls.view.opaque = NO;
 
     UIButton *exitButton = [UIButton buttonWithType:UIButtonTypeSystem];
     exitButton.frame = CGRectMake(16.0, 16.0, 54.0, 38.0);
@@ -526,8 +527,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     self.controlsWindow.rootViewController = controls;
     self.controlsWindow.interactiveView = exitButton;
     self.controlsWindow.backgroundColor = UIColor.clearColor;
+    // On the pre-scene UIWindow implementation used by iOS 12, a clear
+    // background does not reliably clear UIWindow/UIView's opaque flag.  An
+    // opaque transparent window is composited as black and hides the SDL game
+    // window underneath it, while the emulator (and audio) continues to run.
+    self.controlsWindow.opaque = NO;
+    self.controlsWindow.layer.opaque = NO;
     self.controlsWindow.hidden = NO;
     self.hostWindow.hidden = YES;
+    NSLog(
+        @"touchHLE controls overlay: windowOpaque=%d layerOpaque=%d viewOpaque=%d background=%@",
+        self.controlsWindow.opaque,
+        self.controlsWindow.layer.opaque,
+        controls.view.opaque,
+        self.controlsWindow.backgroundColor
+    );
 
     UIInterfaceOrientation deviceOrientation = UIInterfaceOrientationPortrait;
     if (self.launchOrientation == 1) {

@@ -28,6 +28,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "ios")]
+unsafe extern "C" {
+    fn touchhle_ios_log_present_status(
+        force_composition: i32,
+        fullscreen_layer_found: i32,
+        direct_present: i32,
+        gles_api: i32,
+    );
+}
+
 // These are used by the EAGLDrawable protocol implemented by CAEAGLayer.
 // Since these have the ABI of constant symbols rather than literal constants,
 // the values shouldn't matter, and haven't been checked against real iPhone OS.
@@ -587,7 +597,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     // "running but invisible because the app's stdout doesn't reach this log
     // sink"). The milestones are roughly logarithmic so they cover the range
     // from sub-second to ~10 minutes at 60 FPS without flooding.
-    {
+    let frame_number = {
         use std::sync::atomic::{AtomicU64, Ordering};
         static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -597,7 +607,8 @@ pub const CLASSES: ClassExports = objc_classes! {
                 n
             );
         }
-    }
+        n
+    };
 
     assert!(target == gles11::RENDERBUFFER_OES);
 
@@ -661,6 +672,18 @@ pub const CLASSES: ClassExports = objc_classes! {
         && fullscreen_layer == nil
         && env.objc.borrow::<EAGLContextHostObject>(this).api
             == kEAGLRenderingAPIOpenGLES2;
+
+    #[cfg(target_os = "ios")]
+    if frame_number == 1 {
+        unsafe {
+            touchhle_ios_log_present_status(
+                env.options.force_composition as i32,
+                (fullscreen_layer != nil) as i32,
+                (drawable == fullscreen_layer || use_ios_es2_direct_path) as i32,
+                env.objc.borrow::<EAGLContextHostObject>(this).api as i32,
+            );
+        }
+    }
 
     // We're presenting to the opaque CAEAGLLayer that covers the screen.
     // We can use the fast path where we skip composition and present directly.
