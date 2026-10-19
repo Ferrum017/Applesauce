@@ -8,7 +8,7 @@
 use crate::fs::{FsNode, GuestPath};
 use crate::libc::time::{calendar_date_to_timestamp, time_t, tm};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -146,7 +146,7 @@ impl BundleData {
             BundleData::HostDirectory(path) => FsNode::from_host_dir(&path, false),
             BundleData::Zip { zip, bundle_path } => {
                 let archive = Rc::new(RefCell::new(zip));
-                let archive_cache = Rc::new(RefCell::new(HashMap::new()));
+                let archive_cache = Rc::new(RefCell::new(ArchiveFileCache::new()));
                 let metadata_map = Rc::new(RefCell::new(HashMap::new()));
 
                 let mut archive_guard = (*archive).borrow_mut();
@@ -212,11 +212,67 @@ struct ArchivedFileMetadata {
 /// file open won't waste memory.
 type DecompressedFile = Rc<[u8]>;
 
+// iOS 12 gives this process a roughly 700 MiB resident-memory limit on the
+// iPad mini 3. Keeping every file ever opened from a large IPA decompressed in
+// RAM reaches that limit within minutes. Retain a small LRU working set while
+// still allowing simultaneously open handles to share the same allocation.
+#[cfg(target_os = "ios")]
+const ARCHIVE_CACHE_CAPACITY: usize = 32 * 1024 * 1024;
+#[cfg(not(target_os = "ios"))]
+const ARCHIVE_CACHE_CAPACITY: usize = usize::MAX;
+
+#[derive(Debug)]
+struct ArchiveFileCache {
+    files: HashMap<usize, DecompressedFile>,
+    lru: VecDeque<usize>,
+    bytes: usize,
+}
+
+impl ArchiveFileCache {
+    fn new() -> Self {
+        Self {
+            files: HashMap::new(),
+            lru: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&mut self, index: usize) -> Option<DecompressedFile> {
+        let file = Rc::clone(self.files.get(&index)?);
+        self.lru.retain(|&cached_index| cached_index != index);
+        self.lru.push_back(index);
+        Some(file)
+    }
+
+    fn insert(&mut self, index: usize, file: DecompressedFile) -> DecompressedFile {
+        // A single entry larger than the whole budget remains alive through
+        // the returned IpaFile handle, but must not pin that memory after the
+        // guest closes it.
+        if file.len() > ARCHIVE_CACHE_CAPACITY {
+            return file;
+        }
+
+        while self.bytes.saturating_add(file.len()) > ARCHIVE_CACHE_CAPACITY {
+            let Some(oldest_index) = self.lru.pop_front() else {
+                break;
+            };
+            if let Some(oldest) = self.files.remove(&oldest_index) {
+                self.bytes = self.bytes.saturating_sub(oldest.len());
+            }
+        }
+
+        self.bytes = self.bytes.saturating_add(file.len());
+        self.files.insert(index, Rc::clone(&file));
+        self.lru.push_back(index);
+        file
+    }
+}
+
 /// Represents a file inside an IPA bundle that can be opened.
 #[derive(Debug)]
 pub struct IpaFileRef {
     archive: Rc<RefCell<ZipArchive<std::fs::File>>>,
-    archive_files_cache: Rc<RefCell<HashMap<usize, DecompressedFile>>>,
+    archive_files_cache: Rc<RefCell<ArchiveFileCache>>,
     metadata_map: Rc<RefCell<HashMap<usize, ArchivedFileMetadata>>>,
     index: usize,
 }
@@ -227,10 +283,15 @@ impl IpaFileRef {
         // opened each time a new game resource is being read.
         // As IPA is basically an archive, this pattern requires unzipping to be
         // done each time, which is extremely slow.
-        // The solution here is to cache unzipped data in memory, which should
-        // be OK as early iOS IPA files are relatively small in size.
-        let mut archive_cache = (*self.archive_files_cache).borrow_mut();
-        archive_cache.entry(self.index).or_insert_with(|| {
+        // Keep recently unzipped data in memory so repeated reads remain fast.
+        // On memory-constrained iOS devices this cache has a strict LRU budget.
+        if let Some(cached_file) = self.archive_files_cache.borrow_mut().get(self.index) {
+            return IpaFile {
+                file: Cursor::new(cached_file),
+            };
+        }
+
+        let decoded_file = {
             // Read the zip entry into an owned buffer inside its own block so
             // the `archive` RefMut is released before we touch the caches.
             let mut archive = (*self.archive).borrow_mut();
@@ -296,23 +357,62 @@ impl IpaFileRef {
                         .or_insert(meta);
                     Rc::from(buf)
                 }
-                None => {
-                    Rc::from(Vec::new())
-                }
+                None => Rc::from(Vec::new()),
             }
-        });
-        let cached_file = Rc::clone(archive_cache.get(&self.index).unwrap());
+        };
+        let cached_file = self
+            .archive_files_cache
+            .borrow_mut()
+            .insert(self.index, decoded_file);
         IpaFile {
             file: Cursor::new(cached_file),
         }
     }
 
-    pub fn get_last_modified(&self) -> time_t {
-        if !self.metadata_map.borrow().contains_key(&self.index) {
-            // This will force metadata loading
-            // TODO: get metadata without reading the file
-            _ = self.open();
+    fn ensure_metadata(&self) {
+        if self.metadata_map.borrow().contains_key(&self.index) {
+            return;
         }
+
+        let metadata = {
+            let mut archive = (*self.archive).borrow_mut();
+            match archive.by_index(self.index) {
+                Ok(file) => {
+                    let modified = file.last_modified();
+                    let tm = tm::from(
+                        modified.year(),
+                        modified.month(),
+                        modified.day(),
+                        modified.hour(),
+                        modified.minute(),
+                        modified.second(),
+                    );
+                    ArchivedFileMetadata {
+                        last_modified: calendar_date_to_timestamp(tm).into(),
+                        size: file.size(),
+                    }
+                }
+                Err(e) => {
+                    log!(
+                        "Warning: IpaFileRef metadata lookup for entry {} failed: {}; using zero values.",
+                        self.index,
+                        e
+                    );
+                    ArchivedFileMetadata {
+                        last_modified: 0,
+                        size: 0,
+                    }
+                }
+            }
+        };
+        self.metadata_map
+            .borrow_mut()
+            .entry(self.index)
+            .or_insert(metadata);
+    }
+
+    pub fn get_last_modified(&self) -> time_t {
+        self.ensure_metadata();
         self.metadata_map
             .borrow()
             .get(&self.index)
@@ -322,11 +422,7 @@ impl IpaFileRef {
             .unwrap()
     }
     pub fn get_size(&self) -> u64 {
-        if !self.metadata_map.borrow().contains_key(&self.index) {
-            // This will force metadata loading
-            // TODO: get metadata without reading the file
-            _ = self.open();
-        }
+        self.ensure_metadata();
         self.metadata_map.borrow().get(&self.index).unwrap().size
     }
 }

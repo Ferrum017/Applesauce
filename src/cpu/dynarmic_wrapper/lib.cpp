@@ -236,9 +236,9 @@ public:
   DynarmicWrapper(void *direct_memory_access_ptr, size_t null_page_count) {
     Dynarmic::A32::UserConfig user_config;
 #if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-    // The iPad mini 3 has only 1 GiB of RAM. Dynarmic's 128 MiB default code
-    // cache is unnecessarily large for the games supported by this build.
-    user_config.code_cache_size = 32 * 1024 * 1024;
+    // The iPad mini 3 has only 1 GiB of RAM and enforces a roughly 700 MiB
+    // per-process resident limit. Keep enough room for game assets and GL.
+    user_config.code_cache_size = 16 * 1024 * 1024;
 #endif
     user_config.callbacks = &env;
     user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
