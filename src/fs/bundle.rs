@@ -376,7 +376,7 @@ impl IpaFileRef {
 
         let metadata = {
             let mut archive = (*self.archive).borrow_mut();
-            match archive.by_index(self.index) {
+            let metadata = match archive.by_index(self.index) {
                 Ok(file) => {
                     let modified = file.last_modified();
                     let tm = tm::from(
@@ -403,7 +403,8 @@ impl IpaFileRef {
                         size: 0,
                     }
                 }
-            }
+            };
+            metadata
         };
         self.metadata_map
             .borrow_mut()
