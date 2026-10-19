@@ -28,16 +28,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "ios")]
-unsafe extern "C" {
-    fn touchhle_ios_log_present_status(
-        force_composition: i32,
-        fullscreen_layer_found: i32,
-        direct_present: i32,
-        gles_api: i32,
-    );
-}
-
 // These are used by the EAGLDrawable protocol implemented by CAEAGLayer.
 // Since these have the ABI of constant symbols rather than literal constants,
 // the values shouldn't matter, and haven't been checked against real iPhone OS.
@@ -675,14 +665,13 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     #[cfg(target_os = "ios")]
     if frame_number == 1 {
-        unsafe {
-            touchhle_ios_log_present_status(
-                env.options.force_composition as i32,
-                (fullscreen_layer != nil) as i32,
-                (drawable == fullscreen_layer || use_ios_es2_direct_path) as i32,
-                env.objc.borrow::<EAGLContextHostObject>(this).api as i32,
-            );
-        }
+        sdl2::log::log(&format!(
+            "touchHLE first frame: forceComposition={} fullscreenLayer={} directPresent={} GLES={}",
+            env.options.force_composition,
+            fullscreen_layer != nil,
+            drawable == fullscreen_layer || use_ios_es2_direct_path,
+            env.objc.borrow::<EAGLContextHostObject>(this).api,
+        ));
     }
 
     // We're presenting to the opaque CAEAGLLayer that covers the screen.

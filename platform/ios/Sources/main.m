@@ -137,21 +137,6 @@ bool touchhle_ios_jit_available(void) {
     return touchhle_can_allocate_executable_memory();
 }
 
-void touchhle_ios_log_present_status(
-    int32_t force_composition,
-    int32_t fullscreen_layer_found,
-    int32_t direct_present,
-    int32_t gles_api
-) {
-    NSLog(
-        @"touchHLE first frame: forceComposition=%d fullscreenLayer=%d directPresent=%d GLES=%d",
-        force_composition,
-        fullscreen_layer_found,
-        direct_present,
-        gles_api
-    );
-}
-
 void touchhle_ios_log_jit_status(const char *context) {
     unsigned int flags = 0;
     int result = csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags));
